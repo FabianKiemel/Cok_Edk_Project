@@ -599,14 +599,13 @@ def edk(  locmeasurements_xy
 
     variogram = compVar # readVariogram(variogramfile)
 
-    # run external drift kriging
-
-##    inputstring = '# input files:\n' \
-##                   + '# controls:           ' + locmeasurements_xy  + '\n' \
-##                   + '# targets:            ' + loctointerpolate_xy  + '\n' \
-##                   + '# control values:     ' + measurements  + '\n' \
-##                   + '# control ext drifts: ' + exdriftmeasurements  + '\n' \
-##                   + '# target ext drifts:  ' + exdriftatinterpolpts  + '\n'
+  run external drift kriging
+    inputstring = '# input files:\n' \
+                   + '# controls:           ' + locmeasurements_xy  + '\n' \
+                   + '# targets:            ' + loctointerpolate_xy  + '\n' \
+                   + '# control values:     ' + measurements  + '\n' \
+                   + '# control ext drifts: ' + exdriftmeasurements  + '\n' \
+                   + '# target ext drifts:  ' + exdriftatinterpolpts  + '\n'
 
 
     # open output file
@@ -645,3 +644,27 @@ def edk(  locmeasurements_xy
     del weights
     del interpol
 
+def read_file(filename):
+    """ Simple file input function.
+    Reads lines from a file, separates columns by whitespace and returns
+    the results as a one- or two-dimensional numpy ndarray.
+    """
+    f = open(filename, 'r')
+    outarray = []
+    for line in f.readlines():
+        split = line.strip().split()
+        outarray.append([ float(item) for item in split ])
+    f.close()
+    return np.array(outarray).squeeze()
+
+
+def _test():
+    import doctest
+    doctest.testmod()
+
+
+if __name__ == "__main__":
+    print('this is a pure module file')
+    print('running doctests on module')
+    _test()
+    print('doctests finished')

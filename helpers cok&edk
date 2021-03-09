@@ -151,3 +151,267 @@ def krigrhs_cok(controls, controls_co, target,
     rhs[controls.shape[0] + controls_co.shape[0]] = 1
 
     return rhs
+
+def krige_edk(controls,
+              targets,
+              controlvalues,
+              control_extdrift,
+              targets_extdrift,
+              variogram,
+              n,
+              n_type='Normal',
+              verbose=True,
+              counters=[0, 0, 0]
+              ):
+    """ 'Organizer function' for External Drift Kriging.
+    This function sets up the Kriging system and solves it for each given target
+    #>>> vario = variogram.ExponentialVariogram()
+    #>>> vario.setParameters({'range':2,'sill':3,})
+    #>>> controls = np.array([ [[1.,1.]],[[-1.,-1.]],[[0.5,-1.1]],[[-0.8,0.9]]])
+    #>>> targets = np.array([[[ 0., 0.]]])
+    #>>> controlvalues = np.array([ 3.1,  4.,   2.,   5. ])
+    #>>> control_extdrift = np.array([ 4.,  3.,  5.,  3.])
+    #>>> targets_extdrift = np.array([ 6.,  3.])
+    #>>> n = controls.shape[0]
+    #>>> krige_edk(controls, targets, controlvalues, control_extdrift, targets_extdrift, vario, n, verbose = True)
+    #edk matrix
+    #[[ 0.          2.2706498   1.98055269  1.78198258  1.          4.        ]
+    # [ 2.2706498   0.          1.58525759  1.84585059  1.          3.        ]
+    # [ 1.98055269  1.58525759  0.          2.08978437  1.          5.        ]
+    # [ 1.78198258  1.84585059  2.08978437  0.          1.          3.        ]
+    # [ 1.          1.          1.          1.          0.          0.        ]
+    # [ 4.          3.          5.          3.          0.          0.        ]]
+    #weights
+    #[ 0.35579101 -0.5169096   1.3221045  -0.1609859  -5.43188571  1.4486942 ]
+    #interpolation result
+    #0.874593200643
+    """
+    # temporarily fixed number of nearest controls until the final structure
+    # can be put into the api
+
+    # KDTree returns weird data, if more points are requested than are available
+    # therefore limit the number if there are not enough points
+    k = min(n, len(controls))
+    # calculate the centroids of the blocks (if there are any). This should
+    # be robust, if only points are given (as long as the points are passed
+    # in via a 3-D (nblocks x npoints x dimension) array and npoints==1).
+    ctrlcentroids = block.calcCentroids(controls)
+    # set up the KDTree using the centroids
+    controltree = scipy.spatial.cKDTree(ctrlcentroids)
+
+    # bis hierher haengt alles nur von messwerten (controls) ab
+    # ab jetzt: fuer jeden interpolationspunkt (target) interpolieren
+
+    for target, target_extdrift in zip(targets, targets_extdrift):
+        # query the controls-tree for the k nearest points to the target
+        #qtree = controltree.query(target, k)
+        qtree = choose_points(target, controls, controltree, k, n_type)
+        # initialize temporary controls and external drift lists by
+        # selecting the points returned by the tree query
+        tcontrols = controls[qtree[1]]
+        tcontrol_extdrift = control_extdrift[qtree[1]]
+
+        # ----------------------------------------------------------------------
+        # Check, if drift is
+        # a) equal at all locations (no additional information)
+        #    ==> OK
+        # b) at measLoc outside range of drift at all other points (extrapolation)
+        #    ==> OK
+        # ----------------------------------------------------------------------
+
+        if len(set(tcontrol_extdrift.flatten())) == 1:  # use Ordinary Kriging
+            print("no ED")
+            counters[0] += 1
+            weight, interpol, estvar = solve_ok_equationSystem(tcontrols,
+                                                              controlvalues,
+                                                              target,
+                                                              variogram,
+                                                              qtree)
+
+        elif np.logical_or((np.min(tcontrol_extdrift) > target_extdrift), (np.max(tcontrol_extdrift) < target_extdrift)):
+            #print("ED outside range")
+            counters[1] += 1
+            weight, interpol, estvar = solve_ok_equationSystem(tcontrols,
+                                                              controlvalues,
+                                                              target,
+                                                              variogram,
+                                                              qtree)
+
+        else:
+           counters[2] += 1
+           weight, interpol, estvar = solve_edk_equationSystem(tcontrols,
+                                                               tcontrol_extdrift,
+                                                               controlvalues,
+                                                               target,
+                                                               target_extdrift,
+                                                               variogram,
+                                                               qtree)
+
+        yield weight, interpol, estvar, counters
+
+    del weight
+    del interpol
+    del qtree
+    del tcontrols
+    del tcontrol_extdrift
+
+
+def solve_edk_equationSystem(tcontrols,
+                             tcontrol_extdrift,
+                             controlvalues,
+                             target,
+                             target_extdrift,
+                             variogram,
+                             qtree):
+
+    edk_matrix = krigmatrix_edk(tcontrols, tcontrol_extdrift, variogram)
+    rhs = krigrhs_edk(tcontrols, target, target_extdrift, variogram)
+
+    try:
+        weight = np.linalg.solve(edk_matrix, rhs)
+    except:
+        # TODO: FIX THIS!
+        print('Crazy Kriging Matrix --> Check Out Why!!!')
+        raise Exception
+        # print 'multiplying edk_matrix'
+        rd_mat = np.ones_like(edk_matrix)
+        rds = np.random.random(tcontrol_extdrift.shape[0]+2) * 0.05 + 0.95
+        rd_mat[:, -1] = rds
+        rd_mat[-1, :] = rds
+        edk_matrix = edk_matrix * rd_mat
+        weight = np.linalg.solve(edk_matrix, rhs)
+
+    # interpol = np.add.reduce(weight[:-2]*controlvalues[qtree[1][0]]).mean()
+    interpol = (weight[:-2]*controlvalues[qtree[1]]).sum()
+
+    # TODO dangerous! Clean this up! Only via similarity
+    # estvar = np.sum(weight[:-1]*rhs[:-1])  + weight[-1]
+
+    # new attempt 20140724
+
+    # die lambdas (weights ohne mus)
+    lam = weight[:-2][np.newaxis, :]
+
+    # variogram matrix der LHS
+    var_lhs = edk_matrix[:-2, :-2]
+
+    # variogram array der rhs
+    var_rhs = rhs[:-2]
+
+    # 1. summand der estimation variance
+    # [n,n].sum() -- (n*n) Elemente
+    part_1 = (lam * lam.T * var_lhs).sum()
+
+    # 2. summand der estimation variance
+    # [1,n].sum() -- n Elemente
+    part_2 = (lam * var_rhs).sum()
+
+    estvar = (-1.0 * part_1) + (2 * part_2)
+
+    # new attempt Sebastian 20162005
+     # (results of the tagged (*) equations is the same)
+
+    estvar = np.sum(rhs * weight) # (*) # Eq. 12.16 in Isaaks (rewritten in terms of semivariances) or eq. 8.15 in Webster
+
+    return weight, interpol, estvar
+
+
+def krige_cok(controls, controls_co, 
+              targets, 
+              controlvalues, controlvalues_co, 
+              variogram, variogram_co, crossvariogram,
+              n, n_type='Normal', 
+              verbose = True):
+    """'Organizer function' for Co-Kriging.
+    This function sets up the Co-Kriging system and solves it for each given target.
+    """
+
+    # preparation:
+    #   include only the n closest points
+    #   relative to point where estimation is carried out
+    # print "start kdTree"
+    # 1st: primary variable
+    k = min(n, controls.shape[0])
+    ctrlcentroids = block.calcCentroids(controls)
+    controltree = scipy.spatial.cKDTree(ctrlcentroids)
+
+    # 2nd: secondary variable
+    k_co = min(n, controls_co.shape[0])
+    ctrlcentroids_co = block.calcCentroids(controls_co)
+    controltree_co = scipy.spatial.cKDTree(ctrlcentroids_co)
+
+    # TODO: 
+    # - new code for determining which points to choose for the estimation
+    # - not just take the closest ones, but care for direction
+    # e.g. : n closest ones from North-East, SE, NW, SW
+    # - print histogram of distances of the chosen points 
+    #  (should equal appr. the overall histogram)
+
+    # up to here everything depends on measurements only (controls)
+    # from here on: estimation for every individual point (target)
+    # print "percent done: ",
+    for target in targets:
+        # preparation for closest points
+        #print(target, k)
+        #qtree = controltree.query(target, k)     # find the k closest points in the controltree relative to the current target
+        qtree = choose_points(target, controls, controltree, k, n_type)
+        # tcontrols = controls[qtree[1][0],...]  # qtree[1][0] returns the indices of the k closest points in target
+        tcontrols = controls[qtree[1]]           # tcontrols then contains the x,y coordinates of those points
+
+        # qtree_co = controltree_co.query(target, k_co)
+        qtree_co = choose_points(target, controls_co, controltree_co, k_co, n_type)
+        tcontrols_co = controls_co[qtree_co[1]]
+
+        weight, interpol, estvar = solve_cok_equationSystem(tcontrols, tcontrols_co,
+                                                            target,
+                                                            controlvalues, controlvalues_co,
+                                                            variogram, variogram_co, crossvariogram,
+                                                            qtree, qtree_co)
+
+        yield weight, interpol, estvar
+
+    del weight
+    del interpol
+    del estvar
+
+
+def solve_cok_equationSystem(tcontrols, tcontrols_co,  
+                             target, 
+                             controlvalues, controlvalues_co,
+                             variogram, variogram_co, crossvariogram, 
+                             qtree, qtree_co):
+    """
+    """
+    # prepare kriging system
+
+    cok_matrix = krigmatrix_cok(tcontrols, tcontrols_co, variogram, variogram_co, crossvariogram)
+    rhs = krigrhs_cok(tcontrols, tcontrols_co, target, variogram, variogram_co, crossvariogram)
+    # solution for
+    #    weights (lambdas),
+    #    estimation (interpolated value)
+    #    estimation variance at interpolated point (estvar)
+    
+    try:
+        weight = np.linalg.solve(cok_matrix, rhs)
+
+    except:
+        # TODO: FIX THIS?
+        print('Crazy Kriging Matrix --> Check Out Why!!!')
+        #np.savetxt(r'G:\sebastian_gnann\_code\sebastian_gnann_claus\store\cokrig\cok_matrix.txt',
+        #           cok_matrix, fmt='%1.2f', delimiter=';', newline='\n')
+        #np.savetxt(r'G:\sebastian_gnann\_code\sebastian_gnann_claus\store\cokrig\rhs.txt',
+        #           rhs, fmt='%1.2f', delimiter=';', newline='\n')
+        print(np.round(cok_matrix,2))
+        print(np.round(rhs,2))
+        raise Exception
+
+    # interpolated value = SUM(weight_i * measuredValue_i)
+    # this is either
+    #    np.sum(weight[:-1]*(controlvalues[qtree[1][0]].flatten()))
+    # or
+    # interpol = np.add.reduce(weight[:-1]*controlvalues[qtree[1][0]]).mean()
+    controlvalues_tot = np.hstack((controlvalues[qtree[1]], controlvalues_co[qtree_co[1]]))
+    interpol = (weight[:-2]*controlvalues_tot).sum()
+    estvar = np.sum(rhs * weight)
+
+    return weight, interpol, estvar

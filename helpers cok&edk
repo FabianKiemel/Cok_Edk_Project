@@ -1,0 +1,103 @@
+def krigmatrix_edk(controls, control_extdrift, variogram):
+    """ Calculates the Kriging-Matrix for External Drift Kriging.
+    >>> vario = variogram.ExponentialVariogram()
+    >>> vario.setParameters({'range':2,'sill':3,})
+    >>> points = np.array([ [[1.,1.]],[[-1.,-1.]],[[0.5,-1.1]],[[-0.8,0.9]]])
+    >>> krigmatrix_edk(points, np.array([4., 3., 5., 3.]), vario)
+    array([[ 0.        ,  2.2706498 ,  1.98055269,  1.78198258,  1.        ,
+             4.        ],
+           [ 2.2706498 ,  0.        ,  1.58525759,  1.84585059,  1.        ,
+             3.        ],
+           [ 1.98055269,  1.58525759,  0.        ,  2.08978437,  1.        ,
+             5.        ],
+           [ 1.78198258,  1.84585059,  2.08978437,  0.        ,  1.        ,
+             3.        ],
+           [ 1.        ,  1.        ,  1.        ,  1.        ,  0.        ,
+             0.        ],
+           [ 4.        ,  3.        ,  5.        ,  3.        ,  0.        ,
+             0.        ]])
+    """
+    # Zusammensetzen der EDK Matrix
+    #  erster Baustein: OK Matrix
+    #  daran unten den EDK Vektor mit einer Null ganz rechts bauen
+
+    ok_matrix = krigmatrix_ok(controls, variogram)
+    edk_a = np.hstack((control_extdrift.flatten(), [0]))
+    edk_b = np.vstack((ok_matrix, edk_a))
+    edk_c = np.hstack((edk_a, np.array([0.0])))
+    edk_matrix = np.hstack((edk_b, edk_c[:, np.newaxis]))
+
+    return edk_matrix
+
+
+def krigmatrix_cok(controls, controls_co, 
+                   variogram, variogram_co, crossvariogram):
+    """ Calculates the Kriging-Matrix for Co-Kriging.
+    Note: Only for two variables.
+     
+     1...n_u        n_u+1...n_u+n_v     n_u+n_v+1 
+    [Gamma_uu       Gamma_uv            1 0]
+    [                                   . .] 
+    [Gamma_uv       Gamma_vv            0 1]
+    [                                   . .]
+    [1 .... 1       0 .... 0            0 0]
+    [0 .... 0       1 .... 1            0 0]
+    The Gammas are the (cross-)variogram matrices: 
+    - Gamma_uu and Gamma_vv are the variograms of the two variables
+    - Gamma_uv and Gamma_vu are the cross-variograms of the two variables (symmetric).
+    Two additional rows/columns for the two constraints (two Lagrange multipliers).
+    >>> vario = variogram.ExponentialVariogram()
+    >>> vario.setParameters({'range':2,'sill':3,})
+    >>> vario_co = variogram.ExponentialVariogram()
+    >>> vario_co.setParameters({'range':2,'sill':3})
+    >>> crossvario = variogram.ExponentialVariogram()
+    >>> crossvario.setParameters({'range':2,'sill':3})
+    >>> points = np.array([ [[1.,1.]],[[-1.,-1.]],[[0.,0.]] ])
+    >>> points_co = np.array([ [[1.,1.]],[[-1.,-1.]],[[0.,0.]] ])
+    >>> krigmatrix_cok(points, points_co, vario, vario_co, crossvario)
+    array([[ 0.        ,  2.2706498 ,  1.52079393,  0.        ,  2.2706498 ,
+             1.52079393,  1.        ,  0.        ],
+           [ 2.2706498 ,  0.        ,  1.52079393,  2.2706498 ,  0.        ,
+             1.52079393,  1.        ,  0.        ],
+           [ 1.52079393,  1.52079393,  0.        ,  1.52079393,  1.52079393,
+             0.        ,  1.        ,  0.        ],
+           [ 0.        ,  2.2706498 ,  1.52079393,  0.        ,  2.2706498 ,
+             1.52079393,  0.        ,  1.        ],
+           [ 2.2706498 ,  0.        ,  1.52079393,  2.2706498 ,  0.        ,
+             1.52079393,  0.        ,  1.        ],
+           [ 1.52079393,  1.52079393,  0.        ,  1.52079393,  1.52079393,
+             0.        ,  0.        ,  1.        ],
+           [ 1.        ,  1.        ,  1.        ,  0.        ,  0.        ,
+             0.        ,  0.        ,  0.        ],
+           [ 0.        ,  0.        ,  0.        ,  1.        ,  1.        ,
+             1.        ,  0.        ,  0.        ]])
+    """
+
+    var_matrix_uu = block.calcBlockVariogramMatrix(controls, variogram)
+    var_matrix_uv = block.calcBlockCoVariogramMatrix(controls, controls_co, crossvariogram)
+    var_matrix_vu = block.calcBlockCoVariogramMatrix(controls_co, controls, crossvariogram)
+    var_matrix_vv = block.calcBlockVariogramMatrix(controls_co, variogram_co)
+
+    matrix_tempa = np.hstack((var_matrix_uu, var_matrix_uv))
+    matrix_tempb = np.hstack((var_matrix_vu, var_matrix_vv))
+    matrix_temp = np.vstack((matrix_tempa, matrix_tempb))
+
+    horz_vec1a = [np.ones(controls.shape[0])]
+    horz_vec1b = [np.zeros(controls_co.shape[0])]
+    horz_vec1 = np.hstack((horz_vec1a, horz_vec1b))
+        
+    horz_vec2a = [np.zeros(controls.shape[0])]
+    horz_vec2b = [np.ones(controls_co.shape[0])]
+    horz_vec2 = np.hstack((horz_vec2a, horz_vec2b))
+
+    matrix_temp = np.vstack((matrix_temp, horz_vec1, horz_vec2))
+
+    vert_vec1 = np.transpose(horz_vec1)
+    vert_vec1 = np.vstack((vert_vec1, [[0]], [[0]]))
+
+    vert_vec2 = np.transpose(horz_vec2)
+    vert_vec2 = np.vstack((vert_vec2, [[0]], [[0]]))
+
+    co_matrix = np.hstack((matrix_temp, vert_vec1, vert_vec2))
+
+    return co_matrix

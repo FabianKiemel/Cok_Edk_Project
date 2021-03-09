@@ -415,3 +415,233 @@ def solve_cok_equationSystem(tcontrols, tcontrols_co,
     estvar = np.sum(rhs * weight)
 
     return weight, interpol, estvar
+    
+    def choose_points(target, controls, controltree, k, n_type):
+    """ 
+    Function for choosing "representative" points. 
+    - Normal: n closest points independent of direction
+    - Directional: n/4 closest points in each quarter (NE-SE-SW-NW)
+    """
+
+    #todo: check for high k values (k > n_tot / 5)
+    #print('controls.shape[0]', controls.shape[0])
+    
+    if n_type == 'Directional':
+
+        if k < controls.shape[0]/4: # if k is too large, i.e. too many points shall be used, 
+                                    # the points are picked independent of direction
+
+            limit = k/4 # limit, 1/4 of the control points are in this area.
+                        # If n is not a multiple of 4, the n are chosen as follows: 
+                        # e.g. n=10:
+                        # ne: n=3, se n=3, sw n=2, nw n=2, 
+                        # where the 3rd points in ne/se are closer than the 3rd points in sw/nw
+
+
+            count_ne = 0 # counts how many points of this area are used
+            count_se = 0
+            count_sw = 0
+            count_nw = 0
+            count_tot = -1 # counts the overall points
+            index_picked = [] # initial array with picked indices
+            qtree = [] # initialize qtree array
+
+            # The 4*k closest points are picked. It is iteratively checked in which area these points are lying.
+            # The control point array is filled with points until k/4 points of each area are picked. 
+            # If there are not enough points in each area after having checked the k*4 overall closest points,
+            # the further points are picked without considering the direction.
+
+            qtree_temp = controltree.query(target, k*5) # 5*k to ensure to have enough points.
+            controls_temp = controls[qtree_temp[1]]
+
+            for control_point in controls_temp:
+                count_tot += 1
+                            
+                if control_point[0,0] > target[0] and control_point[0,1] > target[1] \
+                    and count_ne < limit and (count_ne+count_se+count_sw+count_nw) < k:
+                    # north-east
+                    qtree.append(qtree_temp[1][count_tot])
+                    count_ne += 1
+                    index_picked.append(count_tot)
+
+                if control_point[0,0] > target[0] and control_point[0,1] < target[1] \
+                    and count_se < limit and (count_ne+count_se+count_sw+count_nw) < k:
+                    # south-east
+                    qtree.append(qtree_temp[1][count_tot])
+                    count_se += 1
+                    index_picked.append(count_tot)
+
+                if control_point[0,0] < target[0] and control_point[0,1] < target[1] \
+                    and count_sw < limit and (count_ne+count_se+count_sw+count_nw) < k:
+                    # south-west
+                    qtree.append(qtree_temp[1][count_tot])
+                    count_sw += 1
+                    index_picked.append(count_tot)
+
+                if control_point[0,0] < target[0] and control_point[0,1] > target[1] \
+                    and count_nw < limit and (count_ne+count_se+count_sw+count_nw) < k:
+                    # north-west
+                    qtree.append(qtree_temp[1][count_tot])
+                    count_nw += 1
+                    index_picked.append(count_tot)
+
+                if (count_ne+count_se+count_sw+count_nw) == k:
+                    break
+            
+            if len(qtree) < k:
+                #print("Not enough points in each quarter... take some points independent of direction")
+                #print('index picked', index_picked)
+                #print('controls_qtree',controls_qtree)
+                
+                qtree_temp_left = np.delete(qtree_temp[1], index_picked, 0)
+
+                for i in range(k-len(qtree)):
+                    #print(i)
+                    #print(qtree_temp_left[i])
+                    qtree.append(qtree_temp_left[i])
+
+            #print('len', len(qtree))
+                   
+            qtree = np.array([np.zeros_like(qtree), qtree]) # to imitate the original shape of the qtree array
+
+        else: # if there are not enough overall points, the "normal" way is chosen
+            # preparation for closest points
+            print('Too few points, control points are chosen without considering direction')
+            qtree = controltree.query(target, k)     # find the k closest points in the controltree relative to the current target
+
+
+    elif n_type == 'Normal':
+        # preparation for closest points
+        qtree = controltree.query(target, k)     # find the k closest points in the controltree relative to the current target
+
+    else:
+        raise Exception('Wrong n_type, choose either Normal or Directional')
+
+    #print(controls[qtree[1],0,:])
+    #plt.scatter(controls[qtree[1],0,0], controls[qtree[1],0,1], marker='o')
+    #plt.scatter(target[0], target[1], marker='o', color='red')
+    #plt.show()
+
+    #coord = np.array([controls[qtree[1],0,0], controls[qtree[1],0,1]])
+    #H = ssd.pdist(coord.T, metric='euclidean')
+    ##print(H)
+    #hist, bins = np.histogram(H, bins=np.arange(0,np.round(np.max(H)/100)*100, 2000), normed=True)
+    #width = 1. * (bins[1] - bins[0])
+    #center = (bins[:-1] + bins[1:])/2
+    #plt.bar(center, hist*100, align='center', width=width, facecolor = 'Grey')
+    #plt.show()
+
+    return qtree
+
+
+def readVariogram(filename):
+    """reads Variogram definitions and parameters from an ini-style configuration file
+    """
+    #from configparser import SafeConfigParser
+    #import variogram
+
+    parser = SafeConfigParser()
+    parser.read(filename)
+
+    vario = variogram.CompositeVariogram()
+
+    for section in parser.sections():
+        if section in variogram.__dict__:
+            # the only way I found to create classes from their name
+            variotmp = variogram.__dict__[section]()
+            paramdict = {}
+
+            for name, value in parser.items(section):
+                paramdict[name]=float(value)
+
+            variotmp.setParameters(paramdict)
+            vario.addVariogram(variotmp)
+        else:
+            raise 'Variogram type not known: ' + section + \
+                  '\nfirst, make sure that this isn''t due to a typo' + \
+                  '\nthen check the available variogram types in variogram.py'
+
+    return vario
+
+
+def edk(  locmeasurements_xy
+        , loctointerpolate_xy
+        , measurements
+        , exdriftmeasurements
+        , exdriftatinterpolpts
+        , compVar
+        , weightfilename = 'Edk_weight_out.dat'
+        , interpolfilename = 'Edk_out.dat'
+        , estvarfilename = 'Edk_estvar_out.dat'
+        , returnVals = False
+        , n=10
+        , counters=[0,0,0]):
+    """ File I/O wrapper for External Drift Kriging.
+    Reads files and prepares data for the External Drift Kriging organizer
+    function
+    """
+    #------------------------------------------------------------
+    #                                main routine for exdrkriging
+    #------------------------------------------------------------ed
+    # define names of input files
+    #locmeasurements_xy      = "Edk_Input.dat"
+    #loctointerpolate_xy     = "Target_Input.dat"
+    #measurements            = "Measurements.dat"
+    #exdriftmeasurements     = "Exdriftmeasurements.dat"
+    #exdriftatinterpolpts    = "Exdriftatinterpolpts.dat"
+
+    # read input files
+    controls = locmeasurements_xy
+    targets = loctointerpolate_xy
+    controlvalues = measurements
+    control_extdrift = exdriftmeasurements
+    targets_extdrift = exdriftatinterpolpts
+
+    variogram = compVar # readVariogram(variogramfile)
+
+    # run external drift kriging
+
+##    inputstring = '# input files:\n' \
+##                   + '# controls:           ' + locmeasurements_xy  + '\n' \
+##                   + '# targets:            ' + loctointerpolate_xy  + '\n' \
+##                   + '# control values:     ' + measurements  + '\n' \
+##                   + '# control ext drifts: ' + exdriftmeasurements  + '\n' \
+##                   + '# target ext drifts:  ' + exdriftatinterpolpts  + '\n'
+
+
+    # open output file
+    interpolfile = open(interpolfilename, 'w')
+    interpolfile.write( '# interpolation result file for external drift kriging\n')
+
+    weightfile = open(weightfilename, 'w')
+    weightfile.write( '# interpolation weights file for external drift kriging\n')
+
+    estvarfile = open(estvarfilename, 'w')
+    estvarfile.write( '# estimation variance file for ordinary kriging\n')
+    for weights, interpol, estvar, counters in krige_edk(          controls,
+                                                         targets,
+                                                         controlvalues,
+                                                         control_extdrift,
+                                                         targets_extdrift,
+                                                         variogram,
+                                                         n,
+                                                         verbose=False,
+                                                         counters=counters):
+        interpolfile.write('%6.3f\n' % (interpol))
+        weightfile.write('\t'.join(['%6.4f' %(item) for item in weights]) + '\n')
+        estvarfile.write('%10.5g \n' % (estvar))
+
+
+    interpolfile.close()
+    weightfile.close()
+    estvarfile.close()
+
+    if returnVals == True:
+        return  weights, interpol, estvar, counters
+    else:
+        pass
+
+    print("done")
+    del weights
+    del interpol
+

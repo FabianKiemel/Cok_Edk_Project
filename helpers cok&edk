@@ -101,3 +101,53 @@ def krigmatrix_cok(controls, controls_co,
     co_matrix = np.hstack((matrix_temp, vert_vec1, vert_vec2))
 
     return co_matrix
+
+def krigrhs_edk(controls, target, target_extdrift, variogram):
+    """ Calculates the right-hand-side of the Kriging system for External Drift Kriging.
+    >>> vario = variogram.ExponentialVariogram()
+    >>> vario.setParameters({'range':2,'sill':3,})
+    >>> controls = np.array([ [[1.,1.]],[[-1.,-1.]],[[0.5,-1.1]],[[-0.8,0.9]]])
+    >>> target = np.array([0.,0.])
+    >>> krigrhs_edk(controls, target, [6.], vario)
+    array([ 1.52079393,  1.52079393,  1.36038741,  1.35698567,  1.        ,  6.        ])
+    """
+    if controls.shape[0]<2:
+        controls = controls[0,:,:,:]
+    rhs_ok = krigrhs_ok(controls, target, variogram)
+    rhs = np.hstack((rhs_ok, target_extdrift[0]))
+
+    return rhs
+
+
+def krigrhs_cok(controls, controls_co, target, 
+                variogram, variogram_co, crossvariogram):
+    """ Calculates the right-hand-side of the Kriging system for Co-Kriging.
+    [b_uu
+    b_uv
+    1
+    0]
+    The b-vectors are the vectors of auto-semivariances (gamma(u0,ui), gamma(u0,vj)).
+    1 and 0 are added to honor the constraints.
+    >>> vario = variogram.ExponentialVariogram()
+    >>> vario.setParameters({'range':2,'sill':3,})
+    >>> vario_co = variogram.ExponentialVariogram()
+    >>> vario_co.setParameters({'range':2,'sill':3})
+    >>> crossvario = variogram.ExponentialVariogram()
+    >>> crossvario.setParameters({'range':2,'sill':3})
+    >>> points = np.array([ [[1.,1.]],[[-1.,-1.]],[[0.,0.]] ])
+    >>> points_co = np.array([ [[1.,1.]],[[-1.,-1.]],[[0.,0.]] ])
+    >>> targ_point = np.array([1.,0.])
+    >>> krigrhs_cok(points, points_co, targ_point, vario, vario_co, crossvario)
+    array([ 1.18040802,  2.01923431,  1.18040802,  1.18040802,  2.01923431,
+            1.18040802,  1.        ,  0.        ])
+    """
+
+    rhs = np.zeros(controls.shape[0] + controls_co.shape[0] + 2)
+    for i in range(controls.shape[0]):
+        rhs[i] = block.calcMeanVariogram(variogram, controls[i], target[np.newaxis, :])
+    for j in range(controls.shape[0], controls.shape[0] + controls_co.shape[0]):
+        #print(j)
+        rhs[j] = block.calcMeanVariogram(crossvariogram, controls_co[j-controls.shape[0]], target[np.newaxis, :])
+    rhs[controls.shape[0] + controls_co.shape[0]] = 1
+
+    return rhs
